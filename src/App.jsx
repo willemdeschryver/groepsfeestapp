@@ -149,6 +149,11 @@ function App() {
   const [cueDescription, setCueDescription] = useState('')
   const [cueModalOpen, setCueModalOpen] = useState(false)
   const [stagePlots, setStagePlots] = useState({})
+  const [leaderContact, setLeaderContact] = useState({
+    firstName: '',
+    lastName: '',
+    phone: '',
+  })
   const [shapeModalOpen, setShapeModalOpen] = useState(false)
   const [shapeDraft, setShapeDraft] = useState({
     name: '',
@@ -172,6 +177,95 @@ function App() {
     () => Array.from({ length: stageDepthMeters + 1 }, (_, index) => index),
     []
   )
+  const plotCanvasBaseWidth = 900
+  const plotCanvasBaseHeight = Math.round(
+    (plotCanvasBaseWidth * stageDepthMeters) / stageWidthMeters
+  )
+
+  const buildPlotPng = (plot) => {
+    const canvasWidth = Number(plot?.canvas?.width) || plotCanvasBaseWidth
+    const canvasHeight = Number(plot?.canvas?.height) || plotCanvasBaseHeight
+    const scaleX = plotCanvasBaseWidth / canvasWidth
+    const scaleY = plotCanvasBaseHeight / canvasHeight
+    const canvas = document.createElement('canvas')
+    canvas.width = plotCanvasBaseWidth
+    canvas.height = plotCanvasBaseHeight
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return null
+
+    ctx.fillStyle = '#ffffff'
+    ctx.fillRect(0, 0, canvas.width, canvas.height)
+
+    const grid = { left: 45, right: 18, top: 32, bottom: 32 }
+    const gridWidth = canvas.width - grid.left - grid.right
+    const gridHeight = canvas.height - grid.top - grid.bottom
+
+    ctx.strokeStyle = '#e1e5f2'
+    ctx.lineWidth = 1
+    for (let i = 0; i <= stageWidthMeters; i += 1) {
+      const x = grid.left + (gridWidth / stageWidthMeters) * i
+      ctx.beginPath()
+      ctx.moveTo(x, grid.top)
+      ctx.lineTo(x, grid.top + gridHeight)
+      ctx.stroke()
+    }
+    for (let i = 0; i <= stageDepthMeters; i += 1) {
+      const y = grid.top + (gridHeight / stageDepthMeters) * i
+      ctx.beginPath()
+      ctx.moveTo(grid.left, y)
+      ctx.lineTo(grid.left + gridWidth, y)
+      ctx.stroke()
+    }
+
+    ctx.strokeStyle = '#c9cfe6'
+    ctx.lineWidth = 2
+    ctx.strokeRect(grid.left, grid.top, gridWidth, gridHeight)
+
+    ctx.fillStyle = '#3a3f63'
+    ctx.font = 'bold 12px Arial'
+    ctx.textAlign = 'center'
+    ctx.textBaseline = 'middle'
+    ctx.fillText('PODIUM', canvas.width / 2, grid.top - 10)
+    ctx.fillText('PUBLIEK', canvas.width / 2, grid.top + gridHeight + 18)
+
+    const shapes = Array.isArray(plot?.shapes) ? plot.shapes : []
+    shapes.forEach((shape) => {
+      const rawSize = Number(shape?.size ?? 70)
+      const size = Math.max(12, rawSize * ((scaleX + scaleY) / 2))
+      const x = Number(shape?.x ?? 0) * scaleX
+      const y = Number(shape?.y ?? 0) * scaleY
+      const fill = shape?.label === 'decor' ? '#f3d2a6' : '#cfe5ff'
+      const stroke = shape?.label === 'decor' ? '#c79b5f' : '#6f96d8'
+
+      ctx.fillStyle = fill
+      ctx.strokeStyle = stroke
+      ctx.lineWidth = 2
+
+      if (shape?.kind === 'square') {
+        ctx.beginPath()
+        ctx.rect(x, y, size, size)
+        ctx.fill()
+        ctx.stroke()
+      } else {
+        ctx.beginPath()
+        ctx.arc(x + size / 2, y + size / 2, size / 2, 0, Math.PI * 2)
+        ctx.fill()
+        ctx.stroke()
+      }
+
+      ctx.fillStyle = '#1b1c2b'
+      ctx.font = 'bold 11px Arial'
+      ctx.textAlign = 'center'
+      ctx.textBaseline = 'middle'
+      const title = shape?.name || 'Object'
+      ctx.fillText(title, x + size / 2, y + size / 2 - 6)
+      ctx.font = '10px Arial'
+      ctx.fillText(shape?.label || '', x + size / 2, y + size / 2 + 8)
+    })
+
+    return canvas.toDataURL('image/png')
+  }
+
   const sections = useMemo(() => {
     let sectionCount = 0
     return lines
@@ -184,6 +278,11 @@ function App() {
         }
       })
   }, [lines])
+
+  const hasEnabledPlots = useMemo(
+    () => sections.some((section) => stagePlots[section.id]?.enabled),
+    [sections, stagePlots]
+  )
 
   const addCharacter = () => {
     setCharacters((prev) => [
@@ -253,6 +352,7 @@ function App() {
       lines,
       cues,
       stagePlots,
+      leaderContact,
     }
     const blob = new Blob([JSON.stringify(payload, null, 2)], {
       type: 'application/json',
@@ -263,6 +363,27 @@ function App() {
     link.download = `toneelstuk-export-${selectedPlay}.json`
     link.click()
     URL.revokeObjectURL(url)
+  }
+
+  const exportPlotsPng = () => {
+    const plots = sections
+      .map((section, index) => {
+        const plot = stagePlots[section.id]
+        if (!plot?.enabled) return null
+        const image = buildPlotPng(plot)
+        if (!image) return null
+        return { section, index, image }
+      })
+      .filter(Boolean)
+
+    plots.forEach((plot) => {
+      const rawTitle = plot.section.title?.trim() || `sectie-${plot.index + 1}`
+      const safeTitle = rawTitle.replace(/[^a-zA-Z0-9-_]+/g, '-').replace(/-+/g, '-')
+      const link = document.createElement('a')
+      link.href = plot.image
+      link.download = `stageplot-${selectedPlay}-${safeTitle}.png`
+      link.click()
+    })
   }
 
   const exportPdf = () => {
@@ -371,6 +492,22 @@ function App() {
       }[type]
     }
 
+    const leaderName = [leaderContact.firstName, leaderContact.lastName]
+      .map((value) => value.trim())
+      .filter(Boolean)
+      .join(' ')
+    const leaderPhone = leaderContact.phone.trim()
+
+    const plotImages = sections.map((section, index) => {
+      const plot = stagePlots[section.id]
+      return {
+        section,
+        index,
+        enabled: plot?.enabled === true,
+        image: plot?.enabled ? buildPlotPng(plot) : null,
+      }
+    })
+
     const content = `
       <html>
         <head>
@@ -384,6 +521,7 @@ function App() {
             h2 { font-size: 10px; margin: 0 0 10px; color: #2a2b5f; text-transform: uppercase; letter-spacing: 0.1em; }
             .meta { font-size: 11px; color: #4b4c6b; margin-bottom: 12px; }
             .grid { display: grid; grid-template-columns: 1.2fr 0.8fr; gap: 20px; }
+            .grid--single { grid-template-columns: 1fr; }
             .panel { border: 1px solid #e6e8f3; border-radius: 12px; padding: 12px; background: #f9f9ff; }
             .line { display: grid; grid-template-columns: 32px 100px 1fr; gap: 8px; padding: 6px 6px; border-radius: 8px; margin: 3px 0; }
             .line--action .text { font-style: italic; color: #4b4c6b; }
@@ -400,11 +538,71 @@ function App() {
             )}px; }
             .cue-card { position: absolute; left: 0; right: 0; border-radius: 12px; padding: 10px; border: 1px solid #e0e3f4; }
             .cue-title { font-size: 9px; letter-spacing: 0.08em; color: #4b4c6b; text-transform: uppercase; margin-bottom: 4px; }
+            .plot-block { margin: 12px 0; }
+            .plot-image { width: 100%; max-width: 680px; border: 1px solid #e0e3f4; border-radius: 12px; background: #ffffff; display: block; }
+            .plot-empty { font-size: 10px; color: #6a6b8e; }
+            .page-break { page-break-before: always; margin-top: 16px; }
+            .table { width: 100%; border-collapse: collapse; font-size: 10px; }
+            .table th, .table td { border: 1px solid #e0e3f4; padding: 4px 6px; text-align: left; vertical-align: top; }
+            .table th { background: #eef1ff; text-transform: uppercase; letter-spacing: 0.08em; font-size: 8px; color: #4b4c6b; }
+            .section-title { font-size: 12px; font-weight: 700; margin: 0 0 8px; color: #2a2b5f; }
+            .plot-note { font-size: 9px; color: #6a6b8e; margin-top: 6px; }
           </style>
         </head>
         <body>
           <h1>Export toneelstuk</h1>
           <div class="meta"><strong>Groep:</strong> ${selectedPlay}</div>
+          <div class="meta"><strong>Leiding:</strong> ${leaderName || '-'}${leaderPhone ? ` | ${leaderPhone}` : ''}</div>
+          <h2>Personages</h2>
+          ${
+            characters.length
+              ? `<table class="table">
+                  <thead>
+                    <tr>
+                      <th>Personage</th>
+                      <th>Gekoppelde persoon</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    ${characters
+                      .map(
+                        (character) => `<tr>
+                          <td>${character.name || '-'}</td>
+                          <td>${character.person || '-'}</td>
+                        </tr>`
+                      )
+                      .join('')}
+                  </tbody>
+                </table>`
+              : '<div class="panel plot-block">Geen personages toegevoegd.</div>'
+          }
+          <h2>Stageplots</h2>
+          ${
+            plotImages.length
+              ? plotImages
+                  .map((item) => {
+                    const title = item.section.title || `Sectie ${item.index + 1}`
+                    if (!item.enabled) {
+                      return `<div class="panel plot-block">
+                        <div class="section-title">Sectie ${item.index + 1}: ${title}</div>
+                        <div class="plot-empty">Geen stageplot voor deze sectie.</div>
+                      </div>`
+                    }
+                    if (!item.image) {
+                      return `<div class="panel plot-block">
+                        <div class="section-title">Sectie ${item.index + 1}: ${title}</div>
+                        <div class="plot-empty">Kon geen afbeelding genereren.</div>
+                      </div>`
+                    }
+                    return `<div class="panel plot-block">
+                      <div class="section-title">Sectie ${item.index + 1}: ${title}</div>
+                      <img class="plot-image" src="${item.image}" alt="Stageplot sectie ${item.index + 1}" />
+                    </div>`
+                  })
+                  .join(' ')
+              : '<div class="panel plot-block">Geen secties gevonden.</div>'
+          }
+          <div class="page-break"></div>
           <div class="grid">
             <div class="panel">
               <h2>Tekstlijnen</h2>
@@ -496,6 +694,13 @@ function App() {
       const importedLines = Array.isArray(data.lines) ? data.lines : null
       if (Array.isArray(data.characters)) setCharacters(data.characters)
       if (importedLines) setLines(importedLines)
+      if (data.leaderContact && typeof data.leaderContact === 'object') {
+        setLeaderContact({
+          firstName: data.leaderContact.firstName ?? '',
+          lastName: data.leaderContact.lastName ?? '',
+          phone: data.leaderContact.phone ?? '',
+        })
+      }
       if (Array.isArray(data.cues)) {
         const lineMap = new Map(
           (importedLines || lines).map((line) => [line.id, line])
@@ -537,6 +742,10 @@ function App() {
               sectionId,
               {
                 enabled: plot?.enabled === true,
+                canvas: {
+                  width: Number(plot?.canvas?.width ?? 0),
+                  height: Number(plot?.canvas?.height ?? 0),
+                },
                 shapes: shapes.map((shape) => ({
                   id: shape?.id ?? crypto.randomUUID(),
                   x: Number(shape?.x ?? 0),
@@ -648,6 +857,24 @@ function App() {
       return changed ? next : prev
     })
   }, [sections])
+
+  const updatePlotCanvasSize = useCallback((sectionId, rect) => {
+    if (!sectionId || !rect) return
+    const width = Math.round(rect.width)
+    const height = Math.round(rect.height)
+    setStagePlots((prev) => {
+      const section = prev[sectionId] || { enabled: true, shapes: [] }
+      const current = section.canvas || {}
+      if (current.width === width && current.height === height) return prev
+      return {
+        ...prev,
+        [sectionId]: {
+          ...section,
+          canvas: { width, height },
+        },
+      }
+    })
+  }, [])
 
   const enableStagePlot = (sectionId) => {
     setStagePlots((prev) => ({
@@ -801,6 +1028,7 @@ function App() {
     const canvas = event.currentTarget.closest('.plot-canvas')
     if (!canvas) return
     const rect = canvas.getBoundingClientRect()
+    updatePlotCanvasSize(sectionId, rect)
     event.preventDefault()
     event.stopPropagation()
     dragStateRef.current = {
@@ -819,6 +1047,7 @@ function App() {
     const canvas = event.currentTarget.closest('.plot-canvas')
     if (!canvas) return
     const rect = canvas.getBoundingClientRect()
+    updatePlotCanvasSize(sectionId, rect)
     event.preventDefault()
     event.stopPropagation()
     dragStateRef.current = {
@@ -971,6 +1200,9 @@ function App() {
 
                     <Stack spacing={1}>
                       <Typography variant="h2">Personages</Typography>
+                      <Typography color="text.secondary">
+                        Geef elk personage een naam en koppel eventueel de speler. Dit verschijnt mee in de PDF.
+                      </Typography>
                       {characters.map((character) => (
                         <Stack
                           key={character.id}
@@ -1032,6 +1264,9 @@ function App() {
 
                     <Stack spacing={1}>
                       <Typography variant="h2">Tekstlijnen</Typography>
+                      <Typography color="text.secondary">
+                        Gebruik type "sectie" om scenes te markeren. Die komen later terug in de stageplots.
+                      </Typography>
                       {lines.map((line, index) => (
                         <Stack
                           key={line.id}
@@ -1144,7 +1379,7 @@ function App() {
                               onChange={(event) =>
                                 updateLine(line.id, 'text', event.target.value)
                               }
-                              placeholder="Bijv. Scène 2 - De bakkerij"
+                              placeholder="Bijv. Scene 2 - De bakkerij"
                               fullWidth
                             />
                           ) : (
@@ -1217,6 +1452,9 @@ function App() {
                 <Box className="editor editor--split">
                   <Box className="cue-left">
                     <Typography variant="h2">Tekst (read-only)</Typography>
+                    <Typography color="text.secondary" sx={{ mt: 1 }}>
+                      Klik op een regelnummer of woord om een cue te plaatsen.
+                    </Typography>
                     <Stack spacing={2} sx={{ mt: 2 }}>
                       {lines.map((line, index) => {
                         const character = characters.find(
@@ -1596,7 +1834,7 @@ function App() {
                                                     {shape.name || 'Object'}
                                                   </Typography>
                                                   <Typography className="plot-list-desc" color="text.secondary">
-                                                    {shape.description || '?'}
+                                                    {shape.description || '-'}
                                                   </Typography>
                                                   <Typography className="plot-list-meta" color="text.secondary">
                                                     {shape.label}
@@ -1652,9 +1890,61 @@ function App() {
                     <Typography color="text.secondary">
                       Exporteer het volledige stuk als PDF of JSON.
                     </Typography>
+                    <Card variant="outlined" className="summary">
+                      <CardContent>
+                        <Stack spacing={2}>
+                          <Typography variant="h2">Leiding van de afdeling</Typography>
+                          <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2}>
+                            <TextField
+                              label="Voornaam"
+                              value={leaderContact.firstName}
+                              onChange={(event) =>
+                                setLeaderContact((prev) => ({
+                                  ...prev,
+                                  firstName: event.target.value,
+                                }))
+                              }
+                              fullWidth
+                            />
+                            <TextField
+                              label="Achternaam"
+                              value={leaderContact.lastName}
+                              onChange={(event) =>
+                                setLeaderContact((prev) => ({
+                                  ...prev,
+                                  lastName: event.target.value,
+                                }))
+                              }
+                              fullWidth
+                            />
+                          </Stack>
+                          <TextField
+                            label="Telefoonnummer"
+                            value={leaderContact.phone}
+                            onChange={(event) =>
+                              setLeaderContact((prev) => ({
+                                ...prev,
+                                phone: event.target.value,
+                              }))
+                            }
+                            fullWidth
+                          />
+                          <Typography color="text.secondary">
+                            Deze gegevens komen mee in de PDF-export.
+                          </Typography>
+                        </Stack>
+                      </CardContent>
+                    </Card>
                     <Stack direction="row" spacing={2}>
                       <Button variant="contained" onClick={exportPdf}>
                         Exporteer PDF
+                      </Button>
+                      <Button
+                        variant="outlined"
+                        onClick={exportPlotsPng}
+                        disabled={!hasEnabledPlots}
+                      >
+                        Exporteer plots (PNG)
                       </Button>
                       <Button variant="outlined" onClick={exportJson}>
                         Exporteer JSON
@@ -1830,4 +2120,3 @@ function App() {
 }
 
 export default App
-
